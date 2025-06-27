@@ -1,7 +1,7 @@
 import {useGame} from '../contexts/GameContext';
 
 export default function WaitingRoom() {
-    const {gameState, isHost, startGame, leaveGame, gameId, playerName} = useGame();
+    const {gameState, isHost, startGame, leaveGame, gameId, playerName, error} = useGame();
 
     const handleStartGame = () => {
         if (gameState?.players?.length >= gameState?.settings?.minPlayers) {
@@ -11,9 +11,19 @@ export default function WaitingRoom() {
 
     const canStart = isHost && gameState?.players?.length >= (gameState?.settings?.minPlayers || 4);
 
+    // Add some debugging
+    console.log('WaitingRoom state:', {gameState, isHost, playerName, gameId});
+
     return (
         <div className="waiting-room">
             <div className="waiting-container">
+                {/* Show any errors */}
+                {error && (
+                    <div className="error-message">
+                        ❌ {error}
+                    </div>
+                )}
+
                 <div className="game-header">
                     <h2>🎮 Game: {gameId}</h2>
                     <button onClick={leaveGame} className="leave-btn">
@@ -38,7 +48,11 @@ export default function WaitingRoom() {
                                 <span className="player-name">{player.name}</span>
                                 {player.isHost && <span className="host-icon">👑</span>}
                             </div>
-                        ))}
+                        )) || (
+                            <div className="no-players">
+                                <p>Loading players...</p>
+                            </div>
+                        )}
                     </div>
                 </div>
 

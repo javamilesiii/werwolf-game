@@ -8,7 +8,12 @@ const playerSchema = new mongoose.Schema({
     votes: {type: Number, default: 0},
     hasVoted: {type: Boolean, default: false},
     votedFor: String,
-    isHost: {type: Boolean, default: false}
+    isHost: {type: Boolean, default: false},
+    // ADD WITCH POTION TRACKING
+    potions: {
+        heal: {type: Boolean, default: true},    // Has healing potion
+        poison: {type: Boolean, default: true}   // Has poison potion
+    }
 });
 
 const gameSchema = new mongoose.Schema({
@@ -22,8 +27,11 @@ const gameSchema = new mongoose.Schema({
     dayCount: {type: Number, default: 0},
     settings: {
         maxPlayers: {type: Number, default: 10},
-        minPlayers: {type: Number, default: 4}
+        minPlayers: {type: Number, default: 4},
+        avoidRoleRepeats: {type: Boolean, default: true}  // ADD THIS
     },
+    nightActions: {type: mongoose.Schema.Types.Mixed, default: {}},
+    winner: String,
     createdAt: {type: Date, default: Date.now},
     lastActivity: {type: Date, default: Date.now}
 });
