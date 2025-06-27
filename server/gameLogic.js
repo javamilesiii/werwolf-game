@@ -5,7 +5,7 @@ class GameLogic {
         WEREWOLF: 'werewolf',
         VILLAGER: 'villager',
         SEER: 'seer',
-        DOCTOR: 'doctor',
+        GUARD: 'guard',
         MAYOR: 'mayor'
     };
 
@@ -19,7 +19,7 @@ class GameLogic {
             roles.push(this.ROLES.SEER);
 
             if (playerCount >= 6) {
-                roles.push(this.ROLES.DOCTOR);
+                roles.push(this.ROLES.GUARD);
             }
 
             if (playerCount >= 8) {

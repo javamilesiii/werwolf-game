@@ -57,7 +57,11 @@ function gameReducer(state, action) {
         case 'CLEAR_ERROR':
             return {...state, error: null};
         case 'RESET_GAME':
-            return {...initialState, connected: state.connected};
+            return {
+                ...initialState,
+                connected: state.connected,  // Keep connection status
+                phase: 'lobby'               // Ensure we go back to lobby
+            };
         case 'SET_NIGHT_RESULTS':
             return {...state, nightResults: action.payload};
         case 'SET_VOTING_RESULTS':
@@ -110,6 +114,9 @@ export function GameProvider({children}) {
         socket.on('disconnect', () => {
             console.log('🔴 Disconnected from server');
             dispatch({type: 'SET_CONNECTED', payload: false});
+            // Reset game state on disconnect
+            dispatch({type: 'RESET_GAME'});
+            dispatch({type: 'SET_PHASE', payload: 'lobby'});
         });
 
         socket.on('game-created', (data) => {
@@ -237,12 +244,45 @@ export function GameProvider({children}) {
             console.log('🔮 Seer result:', data);
             dispatch({type: 'SET_SEER_RESULT', payload: data});
         });
+        socket.on('player-left', (data) => {
+            console.log('👋 Player left:', data);
+            dispatch({type: 'SET_GAME_STATE', payload: data.game});
+
+            // If we were assigned as new host
+            const currentPlayer = data.game.players.find(p => p.socketId === socket.id);
+            if (currentPlayer?.isHost) {
+                dispatch({type: 'SET_IS_HOST', payload: true});
+                console.log('👑 You are now the host!');
+            }
+        });
+        socket.on('player-disconnected', (data) => {
+            console.log('💔 Player disconnected:', data);
+            dispatch({type: 'SET_GAME_STATE', payload: data.game});
+
+            // If we were assigned as new host
+            const currentPlayer = data.game.players.find(p => p.socketId === socket.id);
+            if (currentPlayer?.isHost) {
+                dispatch({type: 'SET_IS_HOST', payload: true});
+                console.log('👑 You are now the host due to disconnection!');
+            }
+        });
+
+        // Handle being kicked/removed from game
+        socket.on('removed-from-game', (data) => {
+            console.log('🚫 Removed from game:', data);
+            dispatch({type: 'RESET_GAME'});
+            dispatch({type: 'SET_PHASE', payload: 'lobby'});
+            dispatch({type: 'SET_ERROR', payload: data.reason || 'You were removed from the game'});
+        });
 
         return () => {
             socket.off('connect');
             socket.off('disconnect');
             socket.off('game-created');
             socket.off('player-joined');
+            socket.off('player-left');
+            socket.off('player-disconnected');
+            socket.off('removed-from-game');
             socket.off('game-started');
             socket.off('role-assigned');
             socket.off('error');
@@ -273,8 +313,17 @@ export function GameProvider({children}) {
     };
 
     const leaveGame = () => {
-        socket.emit('leave-game', {gameId: state.gameId});
+        console.log('🚪 Leaving game:', state.gameId);
+
+        if (state.gameId) {
+            socket.emit('leave-game', {gameId: state.gameId});
+        }
+
+        // Immediately reset local state
         dispatch({type: 'RESET_GAME'});
+
+        // Also reset phase to lobby
+        dispatch({type: 'SET_PHASE', payload: 'lobby'});
     };
     const nightAction = (action, targetSocketId) => {
         socket.emit('night-action', {

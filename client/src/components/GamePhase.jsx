@@ -18,8 +18,8 @@ export default function GamePhase() {
         isHost,
         currentNightRole,
         nightRoleMessage,
-        nightActionInfo,     // ADD THIS
-        witchDeathInfo       // ADD THIS
+        nightActionInfo,     // This is now properly available
+        witchDeathInfo       // This is now properly available
     } = useGame();
 
     // Get current player info
@@ -41,8 +41,19 @@ export default function GamePhase() {
                 {/* Game Header */}
                 <div className="game-header">
                     <h2>🌙 Day {gameState.dayCount}</h2>
-                    <div className="phase-indicator">
-                        Phase: <span className="phase-name">{gameState.phase}</span>
+                    <div className="header-controls">
+                        <div className="phase-indicator">
+                            Phase: <span className="phase-name">{gameState.phase}</span>
+                        </div>
+                        {isHost && gameState.phase !== 'ended' && (
+                            <button
+                                onClick={returnToLobby}
+                                className="return-lobby-btn-small"
+                                title="Return to lobby (Host only)"
+                            >
+                                🔄 Lobby
+                            </button>
+                        )}
                     </div>
                 </div>
 
@@ -50,7 +61,24 @@ export default function GamePhase() {
                 {nightResults && gameState.phase === 'day' && (
                     <div className="night-results">
                         <h3>🌅 Morning News</h3>
-                        {nightResults.killedPlayer ? (
+                        {nightResults.killedPlayers && nightResults.killedPlayers.length > 0 ? (
+                            <div>
+                                {nightResults.killedPlayers.map((victim, index) => (
+                                    <p key={index} className="death-announcement">
+                                        💀 <strong>{victim.name}</strong> was found dead this morning!
+                                        {victim.role &&
+                                            <span> (They were a {getRoleIcon(victim.role)} {victim.role})</span>}
+                                        {victim.cause === 'poison' &&
+                                            <span className="poison-death"> 🧙‍♀️ Poisoned by the witch!</span>}
+                                        {victim.cause === 'werewolf' &&
+                                            <span className="werewolf-death"> 🐺 Killed by werewolves!</span>}
+                                    </p>
+                                ))}
+                                {nightResults.protectionEvents && nightResults.protectionEvents.map((event, index) => (
+                                    <p key={index} className="protection-note">{event}</p>
+                                ))}
+                            </div>
+                        ) : nightResults.killedPlayer ? (
                             <p className="death-announcement">
                                 💀 <strong>{nightResults.killedPlayer}</strong> was found dead this morning!
                                 {nightResults.wasProtected && " (But they were protected!)"}
@@ -66,7 +94,15 @@ export default function GamePhase() {
                     <div className="voting-results">
                         <h3>📊 Voting Results</h3>
                         {votingResults.eliminatedPlayer ? (
-                            <p>🔥 <strong>{votingResults.eliminatedPlayer}</strong> was eliminated by vote!</p>
+                            <div>
+                                <p>🔥 <strong>{votingResults.eliminatedPlayer.name}</strong> was eliminated by vote!</p>
+                                {votingResults.eliminatedPlayer.role && (
+                                    <p className="role-reveal">
+                                        🎭 They were
+                                        a <strong>{getRoleIcon(votingResults.eliminatedPlayer.role)} {votingResults.eliminatedPlayer.role}</strong>
+                                    </p>
+                                )}
+                            </div>
                         ) : (
                             <p>🤝 The vote was a tie - no one was eliminated!</p>
                         )}
@@ -128,7 +164,7 @@ export default function GamePhase() {
 
                 {/* Game Phase Content */}
                 <div className="phase-content">
-                    {renderPhaseContent(gameState, role, voteCount, currentPlayer)}
+                    {renderPhaseContent(gameState, role, voteCount, currentPlayer, nightActionInfo, witchDeathInfo)}
                 </div>
             </div>
         </div>
@@ -141,7 +177,8 @@ function getRoleIcon(role) {
         'werewolf': '🐺',
         'villager': '👨‍🌾',
         'seer': '🔮',
-        'doctor': '⚕️',
+        'guard': '⚕️',
+        'witch': '🧙‍♀️',
         'mayor': '🎖️'
     };
     return icons[role] || '❓';
@@ -152,7 +189,8 @@ function getRoleDescription(role) {
         'werewolf': 'Eliminate villagers during the night. Win when werewolves equal or outnumber villagers.',
         'villager': 'Find and eliminate the werewolves. Vote during the day to eliminate suspects.',
         'seer': 'Each night, investigate one player to learn if they are a werewolf.',
-        'doctor': 'Each night, protect one player from werewolf attacks.',
+        'guard': 'Each night, protect one player from werewolf attacks.',
+        'witch': 'Use your healing and poison potions wisely during the night phase.',
         'mayor': 'Your vote counts double during the day phase.'
     };
     return descriptions[role] || 'Unknown role';
@@ -162,7 +200,7 @@ function getAlivePlayers(players) {
     return players.filter(p => p.isAlive);
 }
 
-function renderPhaseContent(gameState, role, voteCount, currentPlayer) {
+function renderPhaseContent(gameState, role, voteCount, currentPlayer, nightActionInfo, witchDeathInfo) {
     switch (gameState.phase) {
         case 'day':
             return <DayPhaseContent gameState={gameState} role={role}/>;
@@ -174,7 +212,9 @@ function renderPhaseContent(gameState, role, voteCount, currentPlayer) {
                 gameState={gameState}
                 role={role}
                 currentPlayer={currentPlayer}
-                gameId={gameState.gameId}  // ADD THIS
+                gameId={gameState.gameId}
+                nightActionInfo={nightActionInfo}
+                witchDeathInfo={witchDeathInfo}
             />;
         case 'ended':
             return <GameEndedContent gameState={gameState}/>;
@@ -262,8 +302,8 @@ function VotingPhaseContent({gameState, role, voteCount, currentPlayer}) {
     );
 }
 
-// Night Phase Component
-function NightPhaseContent({gameState, role, currentPlayer}) {
+// Night Phase Component - Fixed to destructure nightActionInfo and witchDeathInfo from props
+function NightPhaseContent({gameState, role, currentPlayer, nightActionInfo, witchDeathInfo}) {
     const {nightAction, confirmNightAction, error} = useGame();
     const [actionSubmitted, setActionSubmitted] = useState(false);
     const [actionConfirmed, setActionConfirmed] = useState(false);
@@ -292,7 +332,7 @@ function NightPhaseContent({gameState, role, currentPlayer}) {
         );
     }
 
-    const targets = alivePlayers.filter(p => p.socketId !== currentPlayer.socketId);
+    const targets = alivePlayers;
 
     const handleNightAction = (action, targetSocketId) => {
         console.log(`🌙 Submitting action: ${action} -> ${targetSocketId}`);
@@ -360,7 +400,7 @@ function NightPhaseContent({gameState, role, currentPlayer}) {
             )}
 
             {isMyTurn ?
-                renderNightActions(role, targets, handleNightAction, actionSubmitted, actionConfirmed, handleConfirmAction, nightActionInfo, witchDeathInfo) :
+                renderNightActions(role, targets, currentPlayer, handleNightAction, actionSubmitted, actionConfirmed, handleConfirmAction, nightActionInfo, witchDeathInfo) :
                 <div className="waiting-turn-detail">
                     <p>It's not your turn yet. Wait for your role to be called.</p>
                 </div>
@@ -369,7 +409,7 @@ function NightPhaseContent({gameState, role, currentPlayer}) {
     );
 }
 
-function renderNightActions(role, targets, handleNightAction, actionSubmitted, actionConfirmed, handleConfirmAction, nightActionInfo, witchDeathInfo) {
+function renderNightActions(role, players, currentPlayer, handleNightAction, actionSubmitted, actionConfirmed, handleConfirmAction, nightActionInfo, witchDeathInfo) {
     if (actionConfirmed) {
         return (
             <div className="action-confirmed">
@@ -403,6 +443,7 @@ function renderNightActions(role, targets, handleNightAction, actionSubmitted, a
             </div>
         );
     }
+    const targets = players.filter(player => player.socketId !== currentPlayer.socketId);
 
     switch (role) {
         case 'witch':
@@ -445,12 +486,12 @@ function renderNightActions(role, targets, handleNightAction, actionSubmitted, a
                     </div>
                 </div>
             );
-        case 'doctor':
+        case 'guard':
             return (
-                <div className="doctor-actions">
+                <div className="guard-actions">
                     <p>⚕️ Choose someone to protect tonight:</p>
                     <div className="action-buttons">
-                        {targets.map(player => (
+                        {players.map(player => (
                             <button
                                 key={player.socketId}
                                 className="protect-button"
@@ -483,34 +524,27 @@ function WitchActions({targets, handleNightAction, witchDeathInfo}) {
                 <p>🧙‍♀️ Choose your target for {actionType}:</p>
                 <div className="action-buttons">
                     {actionType === 'heal' && witchDeathInfo?.deathTarget ? (
-                        // For healing, prioritize the dying player
-                        <>
-                            <button
-                                className="heal-button priority"
-                                onClick={() => handleNightAction('heal', witchDeathInfo.deathTarget.socketId)}
-                            >
-                                🧪 Heal {witchDeathInfo.deathTarget.name} (Will die tonight!)
-                            </button>
-                            {targets.filter(p => p.socketId !== witchDeathInfo.deathTarget.socketId).map(player => (
-                                <button
-                                    key={player.socketId}
-                                    className="heal-button"
-                                    onClick={() => handleNightAction('heal', player.socketId)}
-                                >
-                                    🧪 Heal {player.name}
-                                </button>
-                            ))}
-                        </>
-                    ) : (
+                        // For healing, can only heal the dying player
+                        <button
+                            className="heal-button priority"
+                            onClick={() => handleNightAction('heal', witchDeathInfo.deathTarget.socketId)}
+                        >
+                            🧪 Heal {witchDeathInfo.deathTarget.name} (Will die tonight!)
+                        </button>
+                    ) : actionType === 'poison' ? (
+                        // For poison, can target any alive player
                         targets.map(player => (
                             <button
                                 key={player.socketId}
-                                className={actionType === 'heal' ? 'heal-button' : 'poison-button'}
-                                onClick={() => handleNightAction(actionType, player.socketId)}
+                                className="poison-button"
+                                onClick={() => handleNightAction('poison', player.socketId)}
                             >
-                                {actionType === 'heal' ? '🧪 Heal' : '☠️ Poison'} {player.name}
+                                ☠️ Poison {player.name}
                             </button>
                         ))
+                    ) : (
+                        // Fallback (shouldn't happen with proper logic)
+                        <p>Invalid action type</p>
                     )}
                     <button
                         className="cancel-button"
@@ -531,22 +565,58 @@ function WitchActions({targets, handleNightAction, witchDeathInfo}) {
                 <div className="death-info">
                     <h4>💀 Death Information:</h4>
                     <p>{witchDeathInfo.message}</p>
+
+                    <div className="potion-status">
+                        <p><strong>Your Potions:</strong></p>
+                        <p>🧪 Healing Potion: {witchDeathInfo.hasHealPotion ? '✅ Available' : '❌ Used'}</p>
+                        <p>☠️ Poison Potion: {witchDeathInfo.hasPoisonPotion ? '✅ Available' : '❌ Used'}</p>
+                    </div>
                 </div>
             )}
 
             <div className="potion-buttons">
-                <button
-                    className="heal-button"
-                    onClick={() => setActionType('heal')}
-                >
-                    🧪 Use Healing Potion
-                </button>
-                <button
-                    className="poison-button"
-                    onClick={() => setActionType('poison')}
-                >
-                    ☠️ Use Poison Potion
-                </button>
+                {witchDeathInfo?.hasHealPotion && witchDeathInfo?.deathTarget ? (
+                    <button
+                        className="heal-button"
+                        onClick={() => setActionType('heal')}
+                    >
+                        🧪 Use Healing Potion
+                    </button>
+                ) : witchDeathInfo?.hasHealPotion ? (
+                    <button
+                        className="heal-button disabled"
+                        disabled
+                        title="No one is dying tonight to heal"
+                    >
+                        🧪 Healing Potion (No target)
+                    </button>
+                ) : (
+                    <button
+                        className="heal-button disabled"
+                        disabled
+                        title="You have already used your healing potion"
+                    >
+                        🧪 Healing Potion (Used)
+                    </button>
+                )}
+
+                {witchDeathInfo?.hasPoisonPotion ? (
+                    <button
+                        className="poison-button"
+                        onClick={() => setActionType('poison')}
+                    >
+                        ☠️ Use Poison Potion
+                    </button>
+                ) : (
+                    <button
+                        className="poison-button disabled"
+                        disabled
+                        title="You have already used your poison potion"
+                    >
+                        ☠️ Poison Potion (Used)
+                    </button>
+                )}
+
                 <button
                     className="skip-button"
                     onClick={() => handleNightAction('skip', null)}
@@ -562,7 +632,7 @@ function getNightRoleMessage(role) {
     const messages = {
         'werewolf': '🐺 Werewolves, choose your victim...',
         'seer': '🔮 Seer, choose someone to investigate...',
-        'doctor': '⚕️ Doctor, choose someone to protect...',
+        'guard': '⚕️ Guard, choose someone to protect...',
         'witch': '🧙‍♀️ Witch, use your potions wisely...'
     };
     return messages[role] || `${role}'s turn...`;
@@ -570,7 +640,7 @@ function getNightRoleMessage(role) {
 
 // Game Ended Component
 function GameEndedContent({gameState}) {
-    const {winner} = useGame();
+    const {winner, allPlayerRoles, returnToLobby, isHost} = useGame();
 
     return (
         <div className="game-ended">
@@ -588,6 +658,48 @@ function GameEndedContent({gameState}) {
             ) : (
                 <p>Game ended unexpectedly.</p>
             )}
+
+            {/* Final Roles Display */}
+            {allPlayerRoles && allPlayerRoles.length > 0 && (
+                <div className="final-roles">
+                    <h3>📜 Final Roles</h3>
+                    <div className="roles-grid">
+                        {allPlayerRoles.map((player, index) => (
+                            <div
+                                key={index}
+                                className={`final-role-card ${!player.isAlive ? 'dead' : ''}`}
+                            >
+                                <div className="role-icon-large">
+                                    {getRoleIcon(player.role)}
+                                </div>
+                                <span className="player-name">{player.name}</span>
+                                <span className={`role-info role-${player.role}`}>
+                                    {player.role}
+                                </span>
+                                <span className="survival-status">
+                                    {player.isAlive ? '✅ Survived' : '💀 Eliminated'}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Return to Lobby Controls */}
+            <div className="game-end-controls">
+                {isHost ? (
+                    <button
+                        onClick={returnToLobby}
+                        className="return-lobby-btn"
+                    >
+                        🔄 Return to Lobby
+                    </button>
+                ) : (
+                    <div className="waiting-host">
+                        <p>⏳ Waiting for host to return to lobby...</p>
+                    </div>
+                )}
+            </div>
         </div>
     );
 }

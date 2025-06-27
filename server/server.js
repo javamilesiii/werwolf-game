@@ -57,7 +57,7 @@ function getNightRoleMessage(role) {
     const messages = {
         'werewolf': '🐺 Werewolves, choose your victim...',
         'seer': '🔮 Seer, choose someone to investigate...',
-        'doctor': '⚕️ Doctor, choose someone to protect...',
+        'guard': '⚕️ Guard, choose someone to protect...',
         'witch': '🧙‍♀️ Witch, use your potions wisely...'
     };
     return messages[role] || `${role}'s turn...`;
@@ -90,7 +90,7 @@ function assignRoles(playerCount) {
     }
 
     if (playerCount >= 4) roles.push('seer');
-    if (playerCount >= 4) roles.push('doctor');
+    if (playerCount >= 4) roles.push('guard');
     if (playerCount >= 4) roles.push('witch');
     if (playerCount >= 9) roles.push('mayor');
 
@@ -186,7 +186,7 @@ async function checkNightPhaseProgress(gameId) {
     if (!game) return;
 
     const alivePlayers = game.players.filter(p => p.isAlive);
-    const nightRoles = ['werewolf', 'seer', 'doctor', 'witch'];
+    const nightRoles = ['werewolf', 'seer', 'guard', 'witch'];
 
     const currentRole = game.currentNightRole || 'werewolf';
     const currentRoleIndex = nightRoles.indexOf(currentRole);
@@ -246,13 +246,16 @@ async function sendWitchDeathInfo(gameId) {
         }
     }
 
-    // Send death info to all witches
+    // Send death info to all witches with their potion status
     witches.forEach(witch => {
         io.to(witch.socketId).emit('witch-death-info', {
             deathTarget: deathTarget,
             message: deathTarget ?
                 `${deathTarget.name} will die tonight unless you heal them.` :
-                'No one is targeted for death tonight.'
+                'No one is targeted for death tonight.',
+            hasHealPotion: witch.potions?.heal !== false,
+            hasPoisonPotion: witch.potions?.poison !== false,
+            canHealTarget: deathTarget && witch.potions?.heal !== false
         });
     });
 }
@@ -262,7 +265,7 @@ async function moveToNextNightRole(gameId, currentRoleIndex) {
     const game = activeGames.get(gameId);
     if (!game) return;
 
-    const nightRoles = ['werewolf', 'seer', 'doctor', 'witch'];
+    const nightRoles = ['guard', 'seer', 'werewolf', 'witch'];
     const alivePlayers = game.players.filter(p => p.isAlive);
 
     let nextRoleIndex = currentRoleIndex + 1;
@@ -315,7 +318,7 @@ async function transitionToNight(gameId) {
     game.nightActions = {};
     game.nightConfirmations = {};
 
-    const nightRoles = ['werewolf', 'seer', 'doctor', 'witch'];
+    const nightRoles = ['guard', 'seer', 'werewolf', 'witch'];
     const alivePlayers = game.players.filter(p => p.isAlive);
 
     let firstRole = 'werewolf';
@@ -351,7 +354,7 @@ async function checkNightActionsComplete(gameId) {
     const alivePlayers = game.players.filter(p => p.isAlive);
     const werewolves = alivePlayers.filter(p => p.role === 'werewolf');
     const seers = alivePlayers.filter(p => p.role === 'seer');
-    const doctors = alivePlayers.filter(p => p.role === 'doctor');
+    const guards = alivePlayers.filter(p => p.role === 'guard');
 
     const nightActions = game.nightActions || {};
 
@@ -371,10 +374,10 @@ async function checkNightActionsComplete(gameId) {
         if (nightActions[seer.socketId]) completedActions++;
     });
 
-    // Each alive doctor needs to protect
-    doctors.forEach(doctor => {
+    // Each alive guard needs to protect
+    guards.forEach(guard => {
         requiredActions++;
-        if (nightActions[doctor.socketId]) completedActions++;
+        if (nightActions[guard.socketId]) completedActions++;
     });
 
     console.log(`🌙 Night actions: ${completedActions}/${requiredActions} complete`);
@@ -392,13 +395,15 @@ async function processNightResults(gameId) {
     const nightActions = game.nightActions || {};
     let killTarget = null;
     let protectedTarget = null;
+    let poisonTarget = null;
+    let healTarget = null;
     const seerResults = [];
 
     console.log('🌙 Processing night actions:', nightActions);
 
     // Process all night actions
-    Object.entries(nightActions).forEach(([socketId, action]) => {
-        console.log(`🔍 Processing action from ${socketId}:`, action);
+    Object.entries(nightActions).forEach(([key, action]) => {
+        console.log(`🔍 Processing action from ${key}:`, action);
 
         switch (action.action) {
             case 'kill':
@@ -407,77 +412,87 @@ async function processNightResults(gameId) {
                 break;
             case 'protect':
                 protectedTarget = action.targetSocketId;
-                console.log(`🛡️ Doctor protect target: ${protectedTarget}`);
+                console.log(`🛡️ Guard protect target: ${protectedTarget}`);
                 break;
             case 'investigate':
                 const target = game.players.find(p => p.socketId === action.targetSocketId);
                 seerResults.push({
-                    seerSocketId: socketId,
+                    seerSocketId: key,
                     targetName: target?.name,
-                    targetRole: target?.role,  // CHANGE: Send full role instead of just isWerewolf
-                    isWerewolf: target?.role === 'werewolf'  // Keep for backward compatibility
+                    targetRole: target?.role,
+                    isWerewolf: target?.role === 'werewolf'
                 });
                 console.log(`🔮 Seer investigation: ${target?.name} is ${target?.role}`);
                 break;
             case 'poison':
-                // Handle witch poison (counts as additional kill)
-                const poisonTarget = action.targetSocketId;
+                poisonTarget = action.targetSocketId;
                 console.log(`☠️ Witch poison target: ${poisonTarget}`);
                 break;
             case 'heal':
-                // Handle witch heal (can save the werewolf victim)
-                const healTarget = action.targetSocketId;
+                healTarget = action.targetSocketId;
                 console.log(`🧪 Witch heal target: ${healTarget}`);
                 break;
         }
     });
 
-    // Process witch actions and werewolf kills together
+    // Process deaths and saves
     let killedPlayers = [];
-    let wasProtected = false;
-    let wasPoisoned = false;
-    let wasHealed = false;
+    let protectionEvents = [];
 
-    // Check for werewolf kill
+    // Check werewolf kill
     if (killTarget) {
-        const witchHealTarget = Object.values(nightActions).find(action => action.action === 'heal')?.targetSocketId;
+        const victim = game.players.find(p => p.socketId === killTarget);
+        let saved = false;
+        let saveReason = '';
 
         if (killTarget === protectedTarget) {
-            wasProtected = true;
-            console.log(`🛡️ ${game.players.find(p => p.socketId === killTarget)?.name} was protected`);
-        } else if (killTarget === witchHealTarget) {
-            wasHealed = true;
-            console.log(`🧪 ${game.players.find(p => p.socketId === killTarget)?.name} was healed by witch`);
+            saved = true;
+            saveReason = 'protected by guard';
+            protectionEvents.push(`🛡️ ${victim.name} was protected by the guard`);
+        } else if (killTarget === healTarget) {
+            saved = true;
+            saveReason = 'healed by witch';
+            protectionEvents.push(`🧪 ${victim.name} was saved by the witch`);
+        }
+
+        if (!saved && victim) {
+            victim.isAlive = false;
+            killedPlayers.push({
+                name: victim.name,
+                role: victim.role,
+                cause: 'werewolf'
+            });
+            console.log(`💀 ${victim.name} was killed by werewolves`);
         } else {
-            // Player dies
-            const victim = game.players.find(p => p.socketId === killTarget);
-            if (victim) {
-                victim.isAlive = false;
-                killedPlayers.push(victim);
-                console.log(`💀 ${victim.name} was killed by werewolves`);
-            }
+            console.log(`✨ ${victim.name} was saved (${saveReason})`);
         }
     }
 
-    // Check for witch poison
-    const poisonAction = Object.values(nightActions).find(action => action.action === 'poison');
-    if (poisonAction) {
-        const poisonVictim = game.players.find(p => p.socketId === poisonAction.targetSocketId);
+    // Check witch poison (separate from werewolf kill)
+    if (poisonTarget) {
+        const poisonVictim = game.players.find(p => p.socketId === poisonTarget);
         if (poisonVictim && poisonVictim.isAlive) {
             poisonVictim.isAlive = false;
-            killedPlayers.push(poisonVictim);
-            wasPoisoned = true;
+            killedPlayers.push({
+                name: poisonVictim.name,
+                role: poisonVictim.role,
+                cause: 'poison'
+            });
             console.log(`☠️ ${poisonVictim.name} was poisoned by witch`);
         }
     }
 
-    // Send seer results privately BEFORE clearing night actions
+    // Send seer results privately
     seerResults.forEach(result => {
         if (result.seerSocketId) {
-            console.log(`🔮 Sending seer result to ${result.seerSocketId}:`, result);
-            io.to(result.seerSocketId).emit('seer-result', {
+            // Extract actual socket ID if it's a compound key
+            const seerSocketId = result.seerSocketId.includes('_') ?
+                result.seerSocketId.split('_')[0] : result.seerSocketId;
+
+            console.log(`🔮 Sending seer result to ${seerSocketId}:`, result);
+            io.to(seerSocketId).emit('seer-result', {
                 targetName: result.targetName,
-                targetRole: result.targetRole,  // SEND FULL ROLE
+                targetRole: result.targetRole,
                 isWerewolf: result.isWerewolf
             });
         }
@@ -497,14 +512,9 @@ async function processNightResults(gameId) {
     const nightResultsData = {
         game: sanitizeGameForClient(game),
         nightResults: {
-            killedPlayers: killedPlayers.map(p => ({
-                name: p.name,
-                role: p.role
-            })),
-            wasProtected: wasProtected,
-            wasHealed: wasHealed,
-            wasPoisoned: wasPoisoned,
-            protectedPlayerName: wasProtected ? game.players.find(p => p.socketId === killTarget)?.name : null
+            killedPlayers: killedPlayers,
+            protectionEvents: protectionEvents,
+            multipleDeaths: killedPlayers.length > 1
         }
     };
 
@@ -756,7 +766,7 @@ io.on('connection', (socket) => {
         }
     });
 
-// Handle night actions (werewolf kills, seer investigations, doctor heals)
+// Handle night actions (werewolf kills, seer investigations, guard heals)
     socket.on('night-action', async (data) => {
         try {
             const {gameId, action, targetSocketId} = data;
@@ -789,6 +799,38 @@ io.on('connection', (socket) => {
                 return;
             }
 
+            // Special handling for witch actions
+            if (player.role === 'witch') {
+                if (action === 'heal') {
+                    // Check if witch has healing potion
+                    if (player.potions?.heal === false) {
+                        socket.emit('error', {message: 'You have already used your healing potion'});
+                        return;
+                    }
+
+                    // For healing, can only heal the werewolf victim
+                    const nightActions = game.nightActions || {};
+                    const werewolfAction = Object.values(nightActions).find(a => a.action === 'kill');
+
+                    if (!werewolfAction || werewolfAction.targetSocketId !== targetSocketId) {
+                        socket.emit('error', {message: 'You can only heal the werewolf victim'});
+                        return;
+                    }
+
+                    // Mark healing potion as used
+                    player.potions.heal = false;
+                } else if (action === 'poison') {
+                    // Check if witch has poison potion
+                    if (player.potions?.poison === false) {
+                        socket.emit('error', {message: 'You have already used your poison potion'});
+                        return;
+                    }
+
+                    // Mark poison potion as used
+                    player.potions.poison = false;
+                }
+            }
+
             if (targetSocketId === socket.id && action !== 'heal') {
                 socket.emit('error', {message: 'You cannot target yourself'});
                 return;
@@ -803,7 +845,7 @@ io.on('connection', (socket) => {
             const validActions = {
                 'werewolf': ['kill'],
                 'seer': ['investigate'],
-                'doctor': ['protect'],
+                'guard': ['protect'],
                 'witch': ['heal', 'poison']
             };
 
@@ -816,7 +858,14 @@ io.on('connection', (socket) => {
                 game.nightActions = {};
             }
 
-            game.nightActions[socket.id] = {action, targetSocketId, role: player.role};
+            // For witch, we need to handle multiple actions in the same night
+            if (player.role === 'witch') {
+                // Create a unique key for each witch action
+                const actionKey = `${socket.id}_${action}`;
+                game.nightActions[actionKey] = {action, targetSocketId, role: player.role};
+            } else {
+                game.nightActions[socket.id] = {action, targetSocketId, role: player.role};
+            }
 
             console.log(`🌙 Night action: ${player.name} (${player.role}) -> ${action} -> ${target.name}`);
 
@@ -824,12 +873,20 @@ io.on('connection', (socket) => {
             activeGames.set(gameId, game);
 
             // Send detailed action confirmation
-            const actionResponse = {
+            let actionResponse = {
                 message: getActionMessage(action, target.name),
                 action: action,
                 targetName: target.name,
-                targetRole: player.role === 'seer' ? target.role : null  // Only seer sees target role
+                targetRole: player.role === 'seer' ? target.role : null
             };
+
+            // Add potion status for witch
+            if (player.role === 'witch') {
+                actionResponse.remainingPotions = {
+                    heal: player.potions?.heal !== false,
+                    poison: player.potions?.poison !== false
+                };
+            }
 
             socket.emit('night-action-submitted', actionResponse);
 
@@ -923,6 +980,17 @@ io.on('connection', (socket) => {
             const roles = assignRolesWithHistory ? assignRolesWithHistory(game.players) : assignRoles(game.players.length);
             game.players.forEach((player, index) => {
                 player.role = roles[index];
+
+                // Initialize witch potions
+                if (player.role === 'witch') {
+                    player.potions = {
+                        heal: true,    // Has healing potion
+                        poison: true   // Has poison potion
+                    };
+                } else {
+                    // Ensure other roles don't have potion properties
+                    player.potions = undefined;
+                }
             });
 
             // Update role history
@@ -933,8 +1001,11 @@ io.on('connection', (socket) => {
             game.phase = 'night';
             game.dayCount = 1;
             game.nightActions = {};
-            game.nightConfirmations = {};           // ADD THIS
-            game.currentNightRole = 'werewolf';     // ADD THIS
+            game.nightConfirmations = {};
+            game.currentNightRole = 'werewolf';
+
+            // Mark the potions field as modified for MongoDB
+            game.markModified('players');
 
             await game.save();
             activeGames.set(gameId, game);
@@ -947,11 +1018,11 @@ io.on('connection', (socket) => {
                 });
             });
 
-            // Start the game with night phase - INCLUDE CURRENT ROLE INFO
+            // Start the game with night phase
             io.to(gameId).emit('game-started', {
                 game: sanitizeGameForClient(game),
-                currentRole: 'werewolf',                           // ADD THIS
-                nightRoleMessage: '🐺 Werewolves, choose your victim...'  // ADD THIS
+                currentRole: 'werewolf',
+                nightRoleMessage: '🐺 Werewolves, choose your victim...'
             });
 
             console.log(`🚀 Game started: ${gameId} - Night phase begins with werewolves`);
@@ -988,16 +1059,18 @@ io.on('connection', (socket) => {
             // Reset game to waiting state - PROPERLY RESET EVERYTHING
             game.phase = 'waiting';
             game.dayCount = 0;
-            game.winner = undefined;  // Use undefined instead of null
+            game.winner = undefined;
             game.nightActions = {};
 
             // Reset all players completely
             game.players.forEach(player => {
-                player.role = undefined;      // Use undefined
+                player.role = undefined;
                 player.isAlive = true;
                 player.votes = 0;
                 player.hasVoted = false;
-                player.votedFor = undefined;  // Use undefined
+                player.votedFor = undefined;
+                // Reset witch potions
+                player.potions = undefined;
                 // Keep socketId, name, isHost - these should remain
             });
 
@@ -1093,46 +1166,125 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('leave-game', async (data) => {
+        try {
+            const {gameId} = data;
+            console.log(`🚪 Player ${socket.id} leaving game ${gameId}`);
+
+            let game = activeGames.get(gameId) || await Game.findOne({gameId});
+
+            if (!game) {
+                console.log(`❌ Game ${gameId} not found for leave`);
+                socket.emit('error', {message: 'Game not found'});
+                return;
+            }
+
+            const playerIndex = game.players.findIndex(p => p.socketId === socket.id);
+            if (playerIndex === -1) {
+                console.log(`❌ Player ${socket.id} not found in game ${gameId}`);
+                socket.emit('error', {message: 'Player not found in game'});
+                return;
+            }
+
+            const leavingPlayer = game.players[playerIndex];
+            const wasHost = leavingPlayer.isHost;
+
+            console.log(`👤 ${leavingPlayer.name} (host: ${wasHost}) leaving game ${gameId}`);
+
+            // Remove player from game
+            game.players.splice(playerIndex, 1);
+
+            // Remove player from socket room
+            socket.leave(gameId);
+
+            // If the game is now empty, delete it
+            if (game.players.length === 0) {
+                console.log(`🗑️ Game ${gameId} has no players left, deleting`);
+                activeGames.delete(gameId);
+                await Game.findOneAndDelete({gameId});
+                return;
+            }
+
+            // If the host left, assign a new host
+            if (wasHost && game.players.length > 0) {
+                game.players[0].isHost = true;
+                console.log(`👑 New host assigned: ${game.players[0].name}`);
+            }
+
+            // Save updated game state
+            await game.save();
+            activeGames.set(gameId, game);
+
+            // Notify remaining players about the updated game state
+            io.to(gameId).emit('player-left', {
+                leftPlayerName: leavingPlayer.name,
+                game: sanitizeGameForClient(game),
+                newHost: wasHost ? game.players[0]?.name : null
+            });
+
+            console.log(`✅ ${leavingPlayer.name} successfully left game ${gameId}. Remaining players: ${game.players.length}`);
+
+        } catch (error) {
+            console.error('Error handling leave game:', error);
+            socket.emit('error', {message: 'Failed to leave game'});
+        }
+    });
+
     socket.on('disconnect', async () => {
         console.log('❌ User disconnected:', socket.id);
-        for (const [gameId, game] of activeGames.entries()) {
-            const playerIndex = game.players.findIndex(p => p.socketId === socket.id);
-            if (playerIndex !== -1) {
-                const player = game.players[playerIndex];
-                console.log(`👤 Player ${player.name} disconnected from game ${gameId}`);
 
-                // Remove player from game
-                game.players.splice(playerIndex, 1);
+        try {
+            // Find which game this player was in
+            for (const [gameId, game] of activeGames.entries()) {
+                const playerIndex = game.players.findIndex(p => p.socketId === socket.id);
 
-                // If the host disconnected, assign a new host
-                if (player.isHost && game.players.length > 0) {
-                    game.players[0].isHost = true; // Assign first player as new host
-                    console.log(`👑 New host assigned: ${game.players[0].name}`);
-                }
-                if (game.players.length === 0) {
-                    console.log(`🗑️ Game ${gameId} has no players left and will be deleted`);
-                    activeGames.delete(gameId);
-                    await Game.findByIdAndDelete(gameId);
+                if (playerIndex !== -1) {
+                    const disconnectedPlayer = game.players[playerIndex];
+                    const wasHost = disconnectedPlayer.isHost;
+
+                    console.log(`👤 Player ${disconnectedPlayer.name} disconnected from game ${gameId}`);
+
+                    // Remove player from game
+                    game.players.splice(playerIndex, 1);
+
+                    // If the game is now empty, delete it
+                    if (game.players.length === 0) {
+                        console.log(`🗑️ Game ${gameId} has no players left, deleting`);
+                        activeGames.delete(gameId);
+                        await Game.findOneAndDelete({gameId});
+                        break;
+                    }
+
+                    // If the host disconnected, assign a new host
+                    if (wasHost && game.players.length > 0) {
+                        game.players[0].isHost = true;
+                        console.log(`👑 New host assigned: ${game.players[0].name}`);
+                    }
+
+                    // Save updated game state
+                    await game.save();
+                    activeGames.set(gameId, game);
+
+                    // Notify remaining players
+                    io.to(gameId).emit('player-disconnected', {
+                        disconnectedPlayerName: disconnectedPlayer.name,
+                        game: sanitizeGameForClient(game),
+                        newHost: wasHost ? game.players[0]?.name : null
+                    });
+
+                    console.log(`✅ Handled disconnect for ${disconnectedPlayer.name}. Remaining players: ${game.players.length}`);
                     break;
                 }
-
-                // Save updated game state
-                game.save();
-                activeGames.set(gameId, game);
-
-                // Notify remaining players
-                io.to(gameId).emit('player-disconnected', {
-                    playerName: player.name,
-                    players: game.players.map(p => ({
-                        name: p.name,
-                        isAlive: p.isAlive,
-                        socketId: p.socketId,
-                        isHost: p.isHost
-                    }))
-                });
             }
+
+            // Clean up player role history
+            if (typeof cleanupPlayerHistory === 'function') {
+                cleanupPlayerHistory(socket.id);
+            }
+
+        } catch (error) {
+            console.error('Error handling disconnect:', error);
         }
-        cleanupPlayerHistory(socket.id);
     });
 });
 

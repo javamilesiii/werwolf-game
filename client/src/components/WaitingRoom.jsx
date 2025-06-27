@@ -1,7 +1,26 @@
 import {useGame} from '../contexts/GameContext';
+import {useState, useEffect} from 'react';
 
 export default function WaitingRoom() {
     const {gameState, isHost, startGame, leaveGame, gameId, playerName, error} = useGame();
+    const [notification, setNotification] = useState(null);
+
+    // Show notification when we become host
+    useEffect(() => {
+        if (isHost && notification === null) {
+            // Check if we just became host (not initial host)
+            const wasInitialHost = gameState?.players?.length === 1;
+            if (!wasInitialHost) {
+                setNotification({
+                    type: 'host-transfer',
+                    message: '👑 You are now the host!'
+                });
+
+                // Clear notification after 5 seconds
+                setTimeout(() => setNotification(null), 5000);
+            }
+        }
+    }, [isHost, gameState?.players?.length]);
 
     const handleStartGame = () => {
         if (gameState?.players?.length >= gameState?.settings?.minPlayers) {
@@ -21,6 +40,13 @@ export default function WaitingRoom() {
                 {error && (
                     <div className="error-message">
                         ❌ {error}
+                    </div>
+                )}
+
+                {/* Show notifications */}
+                {notification && (
+                    <div className={`notification ${notification.type}`}>
+                        {notification.message}
                     </div>
                 )}
 
